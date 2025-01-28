@@ -72,10 +72,14 @@ if __name__ == "__main__":
 #### plugin_example.py
 
 ```python
+from typing import AsyncGenerator
+
 from fastbot.event import Context
 from fastbot.event.message import GroupMessageEvent, PrivateMessageEvent
 from fastbot.matcher import Matcher
-from fastbot.plugin import PluginManager, middleware, on
+from fastbot.plugin import Dependency, PluginManager, middleware, on
+from redis.asyncio.client import Redis, Pipeline
+
 
 # Passing rules to the matcher
 IsNotGroupAdmin = Matcher(rule=lambda event: event.sender.role != "admin")
@@ -93,6 +97,38 @@ class IsInGroupBlacklist(Matcher):
 async def init() -> None:
     # Do some initial work here
     ...
+
+
+# Dependency injection
+async def get_redis(*args, **kwargs) -> AsyncGenerator[Redis, None]:
+    if "url" in kwargs:
+        redis = Redis.from_url(decode_responses=True, *args, **kwargs)
+
+    elif "connection_pool" in kwargs:
+        redis = Redis.from_pool(*args, **kwargs)
+
+    else:
+        redis = Redis(
+            host=kwargs.pop("host", environ["REDIS_HOST"]),
+            port=kwargs.pop("port", int(environ["REDIS_PORT"])),
+            db=kwargs.pop("db", environ["REDIS_DB"]),
+            password=kwargs.pop("password", environ["REDIS_PASSWORD"]),
+            decode_responses=kwargs.pop("decode_responses", True),
+            **kwargs,
+        )
+
+    async with redis as r:
+        yield r
+
+
+# Chaining dependency injection
+async def get_pipeline(
+    redis: Redis = Dependency.provide(dependency=redis), *args, **kwargs
+) -> AsyncGenerator[Pipeline, None]:
+    async with redis.pipeline(*args, **kwargs) as pipeline:
+        yield pipeline
+
+        await pipeline.execute()
 
 
 # All middlewares will be executed in sequence
@@ -115,6 +151,9 @@ async def func(
     # The event type to be handled must be specified via type hints
     # You can use `|`  or `typing.Union` types
     event: GroupMessageEvent | PrivateMessageEvent,
+    *,
+    redis: Redis = Dependency.provide(dependency=get_redis),
+    pipeline: Pipeline = Dependency.provide(dependency=get_pipeline),
 ) -> None:
     if event.text == "guess":
         await event.send("Start guessing the number game now: [0-10]!")

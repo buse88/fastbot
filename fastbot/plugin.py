@@ -1,13 +1,21 @@
 import asyncio
 import logging
-from contextlib import suppress
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import KW_ONLY, dataclass, field
 from functools import cache, wraps
 from importlib.util import module_from_spec, spec_from_file_location
+from inspect import (
+    Parameter,
+    isasyncgenfunction,
+    isclass,
+    iscoroutinefunction,
+    isgeneratorfunction,
+    signature,
+)
 from pathlib import Path
 from types import UnionType
-from typing import Any, Callable, ClassVar, Dict, List, Union, get_args, get_origin
+from typing import Annotated, Any, Callable, ClassVar, Union, get_args, get_origin
 
 from fastbot.event import Context, Event
 from fastbot.matcher import Matcher
@@ -28,16 +36,27 @@ class Plugin:
 
     init: Callable | None = None
 
-    middlewares: List[Middleware] = field(default_factory=list)
-    executors: List[Callable[..., Any]] = field(default_factory=list)
+    middlewares: list[Middleware] = field(default_factory=list)
+    executors: list[Callable[..., Any]] = field(default_factory=list)
 
     async def run(self, event: Event) -> None:
         await asyncio.gather(*(executor(event) for executor in self.executors))
 
 
+@dataclass(slots=True)
+class Dependency:
+    _: KW_ONLY
+
+    dependency: Callable
+
+    @classmethod
+    def provide(cls, dependency: Callable[..., Any]) -> Any:
+        return cls(dependency=dependency)
+
+
 @dataclass
 class PluginManager:
-    plugins: ClassVar[Dict[str, Plugin]] = {}
+    plugins: ClassVar[dict[str, Plugin]] = {}
 
     @classmethod
     def import_from(cls, path_to_import: str) -> None:
@@ -50,10 +69,9 @@ class PluginManager:
 
                 spec.loader.exec_module(module)  # type: ignore
 
-                if init := getattr(module, "init", None):
-                    plugin.init = init
+                plugin.init = getattr(module, "init", None)
 
-                logging.info(f"loaded plugin [{module_name}] from [{module_path}]")
+                logging.info(f"Loaded plugin [{module_name}] from [{module_path}]")
 
             except Exception as e:
                 logging.exception(e)
@@ -81,7 +99,7 @@ class PluginManager:
 
     @classmethod
     @cache
-    def middlewares(cls) -> List[Callable[[Context], Any]]:
+    def middlewares(cls) -> list[Callable[[Context], Any]]:
         return [
             func.executor
             for func in sorted(
@@ -99,6 +117,8 @@ class PluginManager:
             )
 
             if not ctx:
+                logging.warning("The context is empty, discarding")
+
                 return
 
         event = Event.build_from(ctx=ctx)
@@ -124,33 +144,174 @@ def middleware(*, priority: int = 0) -> Callable[..., Any]:
 
 
 def on(matcher: Matcher | Callable[..., bool] | None = None) -> Callable[..., Any]:
-    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        event_type = ()
+    def annotation_event_type(annotation: Any) -> tuple[type[Event], ...]:
+        if get_origin(annotation) in (Annotated, Union, UnionType):
+            return tuple(
+                arg
+                for arg in get_args(annotation)
+                if isclass(arg) and issubclass(arg, Event)
+            )
 
-        for param in func.__annotations__.values():
-            if get_origin(param) in (Union, UnionType):
-                for arg in get_args(param):
-                    with suppress(TypeError):
-                        if issubclass(arg, Event):
-                            event_type += (arg,)
+        elif isclass(annotation) and issubclass(annotation, Event):
+            return (annotation,)
+
+        else:
+            return ()
+
+    async def resolve_dependency(
+        event: Event, dependency: Dependency, stack: AsyncExitStack
+    ) -> Any:
+        func = dependency.dependency
+
+        kwargs = {}
+
+        for param_name, param in signature(func).parameters.items():
+            if isinstance(param.default, Dependency):
+                kwargs[param_name] = await resolve_dependency(
+                    event=event, dependency=param.default, stack=stack
+                )
+
+            elif isinstance(event, annotation_event_type(param.annotation)):
+                kwargs[param_name] = event
+
+            elif param.default is not Parameter.empty:
+                kwargs[param_name] = param.default
+
+            elif param.kind in (Parameter.VAR_POSITIONAL, Parameter.VAR_KEYWORD):
+                pass
 
             else:
-                with suppress(TypeError):
-                    if issubclass(param, Event):
-                        event_type += (param,)
+                raise ValueError(
+                    f"Cannot resolve dependency for parameter '{param_name}' "
+                    f"in function '{func.__name__}'. "
+                    f"Parameter must have either a default value, be an Event, or be a Dependency"
+                )
+
+        if isasyncgenfunction(func):
+            return await stack.enter_async_context(asynccontextmanager(func)(**kwargs))
+
+        elif isgeneratorfunction(func):
+            return stack.enter_context(contextmanager(func)(**kwargs))
+
+        elif iscoroutinefunction(func):
+            return await func(**kwargs)
+
+        else:
+            return func(**kwargs)
+
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        sign = signature(func)
+
+        event_type = ()
+
+        for param in sign.parameters.values():
+            event_type += annotation_event_type(param.annotation)
 
         if matcher:
+            if any(
+                param
+                for param in sign.parameters.values()
+                if isinstance(param.default, Dependency)
+            ):
 
-            @wraps(func)
-            async def wrapper(event: Event) -> Any:
-                if isinstance(event, event_type) and matcher(event):
-                    return await func(event)
+                @wraps(func)
+                async def wrapper(event: Event, **kwargs) -> Any:
+                    if isinstance(event, event_type) and matcher(event):
+                        func_kwargs = {}
+
+                        async with AsyncExitStack() as stack:
+                            for param_name, param in sign.parameters.items():
+                                if isinstance(param.default, Dependency):
+                                    func_kwargs[param_name] = await resolve_dependency(
+                                        event=event,
+                                        dependency=param.default,
+                                        stack=stack,
+                                    )
+
+                                elif isinstance(
+                                    event, annotation_event_type(param.annotation)
+                                ):
+                                    kwargs[param_name] = event
+
+                                elif param.default is not Parameter.empty:
+                                    kwargs[param_name] = param.default
+
+                                elif param.kind in (
+                                    Parameter.VAR_POSITIONAL,
+                                    Parameter.VAR_KEYWORD,
+                                ):
+                                    pass
+
+                                else:
+                                    raise ValueError(
+                                        f"Cannot resolve dependency for parameter '{param_name}' "
+                                        f"in function '{func.__name__}'. "
+                                        f"Parameter must have either a default value, be an Event, or be a Dependency."
+                                    )
+
+                            func_kwargs.update(kwargs)
+
+                            return await func(**func_kwargs)
+
+            else:
+
+                @wraps(func)
+                async def wrapper(event: Event, **kwargs) -> Any:
+                    if isinstance(event, event_type) and matcher(event):
+                        return await func(event, **kwargs)
+
         else:
+            if any(
+                param
+                for param in sign.parameters.values()
+                if isinstance(param.default, Dependency)
+            ):
 
-            @wraps(func)
-            async def wrapper(event: Event) -> Any:
-                if isinstance(event, event_type):
-                    return await func(event)
+                @wraps(func)
+                async def wrapper(event: Event, **kwargs) -> Any:
+                    if isinstance(event, event_type):
+                        func_kwargs = {}
+
+                        async with AsyncExitStack() as stack:
+                            for param_name, param in sign.parameters.items():
+                                if isinstance(param.default, Dependency):
+                                    func_kwargs[param_name] = await resolve_dependency(
+                                        event=event,
+                                        dependency=param.default,
+                                        stack=stack,
+                                    )
+
+                                elif isinstance(
+                                    event, annotation_event_type(param.annotation)
+                                ):
+                                    kwargs[param_name] = event
+
+                                elif param.default is not Parameter.empty:
+                                    kwargs[param_name] = param.default
+
+                                elif param.kind in (
+                                    Parameter.VAR_POSITIONAL,
+                                    Parameter.VAR_KEYWORD,
+                                ):
+                                    pass
+
+                                else:
+                                    raise ValueError(
+                                        f"Cannot resolve dependency for parameter '{param_name}' "
+                                        f"in function '{func.__name__}'. "
+                                        f"Parameter must have either a default value, be an Event, or be a Dependency."
+                                    )
+
+                            func_kwargs.update(kwargs)
+
+                            return await func(**func_kwargs)
+
+            else:
+
+                @wraps(func)
+                async def wrapper(event: Event, **kwargs) -> Any:
+                    if isinstance(event, event_type):
+                        return await func(event, **kwargs)
 
         PluginManager.plugins[func.__module__].executors.append(wrapper)
 

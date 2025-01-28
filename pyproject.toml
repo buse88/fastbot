@@ -3,11 +3,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "fastbot-onebot"
-version  = "2024.12.10"
+name = "FastBot"
+version  = "2025.1.28"
 dependencies = ["fastapi", "uvicorn", "websockets"]
 requires-python = ">=3"
-description = "A Lightweight BOT Framework"
+description = "A Lightweight BOT Framework."
 readme = "README.md"
 license = {text = "MIT License"}
 

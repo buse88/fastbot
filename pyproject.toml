@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "FastBot"
+name = "fastbot-onebot"
 version  = "2025.1.28"
 dependencies = ["fastapi", "uvicorn", "websockets"]
 requires-python = ">=3"

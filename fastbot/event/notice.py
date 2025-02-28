@@ -25,7 +25,7 @@ class NoticeEvent(Event):
     def from_ctx(cls, *, ctx: Context) -> "NoticeEvent":
         return (
             event.from_ctx(ctx=ctx)
-            if (event := cls.event_type.get(ctx["meta_event_type"]))
+            if (event := cls.event_type.get(ctx["notice_type"]))
             else cls(
                 ctx=ctx,
                 time=ctx["time"],

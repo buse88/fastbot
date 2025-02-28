@@ -1,13 +1,15 @@
 import asyncio
 import logging
 import os
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, ClassVar, Dict, Iterable, Self
+from typing import Any, ClassVar, Iterable, Self
+from weakref import WeakValueDictionary
 
+import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketException, status
 
-from fastbot.event import Context
 from fastbot.plugin import PluginManager
 
 try:
@@ -23,15 +25,17 @@ except ImportError:
     )
 
 
-@dataclass
+@dataclass(slots=True)
 class FastBot:
     app: ClassVar[FastAPI]
 
-    connectors: ClassVar[Dict[int, WebSocket]] = {}
-    futures: ClassVar[Dict[int, asyncio.Future]] = {}
+    connectors: ClassVar[WeakValueDictionary[int, WebSocket]] = WeakValueDictionary()
+    futures: ClassVar[dict[int, asyncio.Future]] = {}
 
-    def __init__(self, app: FastAPI | None = None, **kwargs) -> None:
-        self.__class__.app = app or FastAPI(**kwargs)
+    self_id: ClassVar[ContextVar[int | None]] = ContextVar("self_id", default=None)
+
+    def __init__(self, *, app: FastAPI = FastAPI()) -> None:
+        self.__class__.app = app
 
     @classmethod
     async def ws_adapter(cls, websocket: WebSocket) -> None:
@@ -87,50 +91,38 @@ class FastBot:
 
         cls.connectors[self_id] = websocket
 
-        try:
+        await cls.event_handler(websocket=websocket)
+
+    @classmethod
+    async def event_handler(cls, websocket: WebSocket) -> None:
+        async with asyncio.TaskGroup() as tg:
             while True:
                 match message := await websocket.receive():
                     case {"bytes": data} | {"text": data}:
-                        _ = asyncio.Task(
-                            cls.event_handler(ctx=json.loads(data)),
-                            loop=asyncio.get_running_loop(),
-                            eager_start=True,
-                        )
+                        if "post_type" in (ctx := json.loads(data)):
+                            cls.self_id.set(ctx.get("self_id"))
+
+                            tg.create_task(PluginManager.run(ctx=ctx))
+
+                        elif ctx["status"] == "ok":
+                            cls.futures[ctx["echo"]].set_result(ctx.get("data"))
+
+                        else:
+                            cls.futures[ctx["echo"]].set_exception(RuntimeError(ctx))
 
                     case _:
                         logging.warning(f"Unknow websocket message received {message=}")
 
-        except Exception as e:
-            logging.exception(e)
-
-        finally:
-            logging.warning(f"Websocket disconnected {self_id=}")
-            del cls.connectors[int(self_id)]
-
-    @classmethod
-    async def event_handler(cls, ctx: Context) -> None:
-        try:
-            if "post_type" in ctx:
-                await PluginManager.run(ctx=ctx)
-
-            else:
-                (
-                    cls.futures[ctx["echo"]].set_result(ctx.get("data"))
-                    if ctx["status"] == "ok"
-                    else cls.futures[ctx["echo"]].set_exception(RuntimeError(ctx))
-                )
-
-        except Exception as e:
-            logging.exception(e)
-
     @classmethod
     async def do(cls, *, endpoint: str, self_id: int | None = None, **kwargs) -> Any:
-        if not self_id:
-            if len(cls.connectors) == 1:
-                self_id = next(iter(cls.connectors))
-
-            else:
-                raise RuntimeError("Parameter `self_id` must be specified")
+        if not (
+            self_id := (
+                self_id
+                or cls.self_id.get()
+                or (next(iter(cls.connectors)) if len(cls.connectors) == 1 else None)
+            )
+        ):
+            raise RuntimeError("Parameter `self_id` must be specified")
 
         logging.debug(f"{endpoint=} {self_id=} {kwargs=}")
 
@@ -148,18 +140,12 @@ class FastBot:
 
             return await future
 
-        except Exception as e:
-            logging.exception(e)
-
         finally:
             del cls.futures[future_id]
 
     @classmethod
     def build(
-        cls,
-        app: FastAPI | None = None,
-        plugins: str | Iterable[str] | None = None,
-        **kwargs,
+        cls, app: FastAPI = FastAPI(), plugins: str | Iterable[str] | None = None
     ) -> Self:
         if isinstance(plugins, str):
             PluginManager.import_from(plugins)
@@ -168,10 +154,8 @@ class FastBot:
             for plugin in plugins:
                 PluginManager.import_from(plugin)
 
-        return cls(app=app, **kwargs)
+        return cls(app=app)
 
     @classmethod
     def run(cls, **kwargs) -> None:
-        import uvicorn
-
         uvicorn.run(app=cls.app, **kwargs)

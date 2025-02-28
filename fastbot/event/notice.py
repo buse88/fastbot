@@ -1,40 +1,45 @@
 import logging
 from dataclasses import KW_ONLY, dataclass
-from functools import cache
-from typing import Dict, Literal, Type
+from typing import ClassVar, Literal, Self, override
 
-from fastbot.event import Context, Event, MetaClass
+from fastbot.event import Context, Event
 
 
 @dataclass
 class NoticeEvent(Event):
     _: KW_ONLY
 
-    notice_type: str
     post_type: Literal["notice"] = "notice"
 
-    @classmethod
-    @cache
-    def subcalsses(cls) -> Dict[str, Type["NoticeEvent"]]:
-        return {subclass.notice_type: subclass for subclass in cls.__subclasses__()}
+    notice_type: str
+
+    event_type: ClassVar[dict[str, type["NoticeEvent"]]] = {}
+
+    def __init_subclass__(cls, *args, **kwargs) -> None:
+        super().__init_subclass__(*args, **kwargs)
+
+        NoticeEvent.event_type[cls.post_type] = cls
 
     @classmethod
-    def build_from(cls, *, ctx: Context) -> "NoticeEvent":
-        if subclass := cls.subcalsses().get(ctx["notice_type"]):
-            return subclass(ctx=ctx, **ctx)
-
-        return cls(
-            ctx=ctx,
-            time=ctx["time"],
-            self_id=ctx["self_id"],
-            notice_type=ctx["notice_type"],
+    @override
+    def from_ctx(cls, *, ctx: Context) -> "NoticeEvent":
+        return (
+            event.from_ctx(ctx=ctx)
+            if (event := cls.event_type.get(ctx["meta_event_type"]))
+            else cls(
+                ctx=ctx,
+                time=ctx["time"],
+                self_id=ctx["self_id"],
+                post_type=ctx["post_type"],
+                notice_type=ctx["notice_type"],
+            )
         )
 
 
 @dataclass
 class GroupFileUploadNoticeEvent(NoticeEvent):
     @dataclass
-    class File(metaclass=MetaClass):
+    class File:
         _: KW_ONLY
 
         id: str
@@ -42,134 +47,181 @@ class GroupFileUploadNoticeEvent(NoticeEvent):
         size: int
         busid: int
 
-        def __init__(self, **kwargs) -> None:
-            pass
-
     _: KW_ONLY
 
-    time: int
-    self_id: int
+    notice_type: Literal["group_upload"] = "group_upload"
+
     group_id: int
     user_id: int
     file: File
 
-    notice_type: Literal["group_upload"] = "group_upload"
-
-    def __init__(self, **kwargs) -> None:
+    def __post_init__(self) -> None:
         logging.debug(self.__repr__())
 
-        self.file = self.File(**self.ctx.get("file", {}))
+        self.file = self.File(
+            **{
+                k: v
+                for k, v in self.ctx["file"].items()
+                if k in self.File.__dataclass_fields__
+            }
+        )
+
+    @classmethod
+    @override
+    def from_ctx(cls, *, ctx: Context) -> Self:
+        return cls(
+            ctx=ctx, **{k: v for k, v in ctx.items() if k in cls.__dataclass_fields__}
+        )
 
 
 @dataclass
 class GroupAdminChangeNoticeEvent(NoticeEvent):
     _: KW_ONLY
 
-    time: int
-    self_id: int
+    notice_type: Literal["group_admin"] = "group_admin"
+
     sub_type: Literal["set", "unset"]
+
     group_id: int
     user_id: int
 
-    notice_type: Literal["group_admin"] = "group_admin"
-
-    def __init__(self, **kwargs) -> None:
+    def __post_init__(self) -> None:
         logging.debug(self.__repr__())
+
+    @classmethod
+    @override
+    def from_ctx(cls, *, ctx: Context) -> Self:
+        return cls(
+            ctx=ctx, **{k: v for k, v in ctx.items() if k in cls.__dataclass_fields__}
+        )
 
 
 @dataclass
 class GroupMemberDecreaseNoticeEvent(NoticeEvent):
     _: KW_ONLY
 
-    time: int
-    self_id: int
+    notice_type: Literal["group_decrease"] = "group_decrease"
+
     sub_type: Literal["leave", "kick", "kick_me"]
+
     group_id: int
     user_id: int
     operator_id: int
 
-    notice_type: Literal["group_decrease"] = "group_decrease"
-
-    def __init__(self, **kwargs) -> None:
+    def __post_init__(self) -> None:
         logging.debug(self.__repr__())
+
+    @classmethod
+    @override
+    def from_ctx(cls, *, ctx: Context) -> Self:
+        return cls(
+            ctx=ctx, **{k: v for k, v in ctx.items() if k in cls.__dataclass_fields__}
+        )
 
 
 @dataclass
 class GroupMemberIncreaseNoticeEvent(NoticeEvent):
     _: KW_ONLY
 
-    time: int
-    self_id: int
+    notice_type: Literal["group_increase"] = "group_increase"
+
     sub_type: Literal["approve", "invite"]
+
     group_id: int
     operator_id: int
     user_id: int
 
-    notice_type: Literal["group_increase"] = "group_increase"
-
-    def __init__(self, **kwargs) -> None:
+    def __post_init__(self) -> None:
         logging.debug(self.__repr__())
+
+    @classmethod
+    @override
+    def from_ctx(cls, *, ctx: Context) -> Self:
+        return cls(
+            ctx=ctx, **{k: v for k, v in ctx.items() if k in cls.__dataclass_fields__}
+        )
 
 
 @dataclass
 class GroupBanNoticeEvent(NoticeEvent):
     _: KW_ONLY
 
-    time: int
-    self_id: int
+    notice_type: Literal["group_ban"] = "group_ban"
+
     sub_type: Literal["ban", "lift_ban"]
+
     group_id: int
     operator_id: int
     user_id: int
     duration: int
 
-    notice_type: Literal["group_ban"] = "group_ban"
-
-    def __init__(self, **kwargs) -> None:
+    def __post_init__(self) -> None:
         logging.debug(self.__repr__())
+
+    @classmethod
+    @override
+    def from_ctx(cls, *, ctx: Context) -> Self:
+        return cls(
+            ctx=ctx, **{k: v for k, v in ctx.items() if k in cls.__dataclass_fields__}
+        )
 
 
 @dataclass
 class FriendAddNoticeEvent(NoticeEvent):
     _: KW_ONLY
 
-    time: int
-    self_id: int
-    user_id: int
-
     notice_type: Literal["friend_add"] = "friend_add"
 
-    def __init__(self, **kwargs) -> None:
+    user_id: int
+
+    def __post_init__(self) -> None:
         logging.debug(self.__repr__())
+
+    @classmethod
+    @override
+    def from_ctx(cls, *, ctx: Context) -> Self:
+        return cls(
+            ctx=ctx, **{k: v for k, v in ctx.items() if k in cls.__dataclass_fields__}
+        )
 
 
 @dataclass
 class GroupMessageRecallNoticeEvent(NoticeEvent):
     _: KW_ONLY
 
-    time: int
-    self_id: int
+    notice_type: Literal["group_recall"] = "group_recall"
+
     group_id: int
     user_id: int
     operator_id: int
     message_id: int
 
-    notice_type: Literal["group_recall"] = "group_recall"
-
-    def __init__(self, **kwargs) -> None:
+    def __post_init__(self) -> None:
         logging.debug(self.__repr__())
+
+    @classmethod
+    @override
+    def from_ctx(cls, *, ctx: Context) -> Self:
+        return cls(
+            ctx=ctx, **{k: v for k, v in ctx.items() if k in cls.__dataclass_fields__}
+        )
 
 
 @dataclass
 class FriendMessageRecallNoticeEvent(NoticeEvent):
     _: KW_ONLY
 
-    time: int
-    self_id: int
+    notice_type: Literal["friend_recall"] = "friend_recall"
+
     user_id: int
     message_id: int
 
-    notice_type: Literal["friend_recall"] = "friend_recall"
-
-    def __init__(self, **kwargs) -> None:
+    def __post_init__(self) -> None:
         logging.debug(self.__repr__())
+
+    @classmethod
+    @override
+    def from_ctx(cls, *, ctx: Context) -> Self:
+        return cls(
+            ctx=ctx, **{k: v for k, v in ctx.items() if k in cls.__dataclass_fields__}
+        )

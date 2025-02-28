@@ -1,9 +1,11 @@
 import asyncio
 import logging
+from bisect import insort
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import KW_ONLY, dataclass, field
-from functools import cache, wraps
+from functools import wraps
+from heapq import merge
 from importlib.util import module_from_spec, spec_from_file_location
 from inspect import (
     Parameter,
@@ -13,6 +15,7 @@ from inspect import (
     isgeneratorfunction,
     signature,
 )
+from operator import attrgetter
 from pathlib import Path
 from types import UnionType
 from typing import Annotated, Any, Callable, ClassVar, Union, get_args, get_origin
@@ -21,20 +24,20 @@ from fastbot.event import Context, Event
 from fastbot.matcher import Matcher
 
 
-@dataclass
+@dataclass(slots=True)
 class Plugin:
-    @dataclass(order=True)
+    @dataclass(order=True, slots=True)
     class Middleware:
         _: KW_ONLY
 
         priority: int = 0
-        executor: Callable[[Context], Any] = field(compare=False)
+        executor: Callable[..., Any]
 
     _: KW_ONLY
 
-    state: ContextVar = ContextVar("state", default=True)
+    state: ContextVar[bool] = ContextVar("state", default=True)
 
-    init: Callable | None = None
+    init: Callable[..., Any] | None = None
 
     middlewares: list[Middleware] = field(default_factory=list)
     executors: list[Callable[..., Any]] = field(default_factory=list)
@@ -47,20 +50,22 @@ class Plugin:
 class Dependency:
     _: KW_ONLY
 
-    dependency: Callable
+    dependency: Callable[..., Any]
 
     @classmethod
     def provide(cls, dependency: Callable[..., Any]) -> Any:
         return cls(dependency=dependency)
 
 
-@dataclass
+@dataclass(slots=True)
 class PluginManager:
     plugins: ClassVar[dict[str, Plugin]] = {}
 
     @classmethod
     def import_from(cls, path_to_import: str) -> None:
         def load(module_name: str, module_path: Path) -> None:
+            module_name = module_name.removesuffix(".py")
+
             cls.plugins[module_name] = plugin = Plugin()
 
             try:
@@ -83,12 +88,7 @@ class PluginManager:
         if (path := Path(path_to_import)).is_dir():
             for file in path.rglob("*.py"):
                 if file.is_file() and not file.name.startswith("_"):
-                    load(
-                        ".".join(file.relative_to(path.parent).parts).removesuffix(
-                            ".py"
-                        ),
-                        file,
-                    )
+                    load(".".join(file.relative_to(path.parent).parts), file)
 
         elif (
             path.is_file()
@@ -98,44 +98,44 @@ class PluginManager:
             load(".".join(path.parts).removesuffix(".py"), path)
 
     @classmethod
-    @cache
-    def middlewares(cls) -> list[Callable[[Context], Any]]:
-        return [
-            func.executor
-            for func in sorted(
+    async def run(cls, *, ctx: Context) -> None:
+        try:
+            for middleware in merge(
                 middleware
                 for plugin in cls.plugins.values()
                 for middleware in plugin.middlewares
+            ):
+                _ = asyncio.Task(
+                    middleware.executor(ctx),
+                    loop=asyncio.get_running_loop(),
+                    eager_start=True,
+                )
+
+                if not ctx:
+                    logging.warning("The context is empty, discarding")
+
+                    return
+
+            event = Event.from_ctx(ctx=ctx)
+
+            await asyncio.gather(
+                *(
+                    plugin.run(event=event)
+                    for plugin in cls.plugins.values()
+                    if plugin.state.get()
+                )
             )
-        ]
 
-    @classmethod
-    async def run(cls, *, ctx: Context) -> None:
-        for middleware in cls.middlewares():
-            _ = asyncio.Task(
-                middleware(ctx), loop=asyncio.get_running_loop(), eager_start=True
-            )
-
-            if not ctx:
-                logging.warning("The context is empty, discarding")
-
-                return
-
-        event = Event.build_from(ctx=ctx)
-
-        await asyncio.gather(
-            *(
-                plugin.run(event=event)
-                for plugin in cls.plugins.values()
-                if plugin.state.get()
-            )
-        )
+        except Exception as e:
+            logging.exception(e)
 
 
 def middleware(*, priority: int = 0) -> Callable[..., Any]:
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        PluginManager.plugins[func.__module__].middlewares.append(
-            Plugin.Middleware(priority=priority, executor=func)
+        insort(
+            PluginManager.plugins[func.__module__].middlewares,
+            Plugin.Middleware(priority=priority, executor=func),
+            key=attrgetter("priority"),
         )
 
         return func
@@ -163,29 +163,35 @@ def on(matcher: Matcher | Callable[..., bool] | None = None) -> Callable[..., An
     ) -> Any:
         func = dependency.dependency
 
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
+        tasks: dict[str, asyncio.Task] = {}
 
-        for param_name, param in signature(func).parameters.items():
-            if isinstance(param.default, Dependency):
-                kwargs[param_name] = await resolve_dependency(
-                    event=event, dependency=param.default, stack=stack
-                )
+        async with asyncio.TaskGroup() as tg:
+            for param_name, param in signature(func).parameters.items():
+                if isinstance(param.default, Dependency):
+                    tasks[param_name] = tg.create_task(
+                        resolve_dependency(
+                            event=event, dependency=param.default, stack=stack
+                        )
+                    )
 
-            elif isinstance(event, annotation_event_type(param.annotation)):
-                kwargs[param_name] = event
+                elif isinstance(event, annotation_event_type(param.annotation)):
+                    kwargs[param_name] = event
 
-            elif param.default is not Parameter.empty:
-                kwargs[param_name] = param.default
+                elif param.default is not Parameter.empty:
+                    kwargs[param_name] = param.default
 
-            elif param.kind in (Parameter.VAR_POSITIONAL, Parameter.VAR_KEYWORD):
-                pass
+                elif param.kind in (Parameter.VAR_POSITIONAL, Parameter.VAR_KEYWORD):
+                    pass
 
-            else:
-                raise ValueError(
-                    f"Cannot resolve dependency for parameter '{param_name}' "
-                    f"in function '{func.__name__}'. "
-                    f"Parameter must have either a default value, be an Event, or be a Dependency"
-                )
+                else:
+                    raise ValueError(
+                        f"Cannot resolve dependency for parameter '{param_name}' "
+                        f"in function '{func.__name__}'. "
+                        f"Parameter must have either a default value, be an Event, or be a Dependency"
+                    )
+
+        kwargs.update({k: v.result() for k, v in tasks.items()})
 
         if isasyncgenfunction(func):
             return await stack.enter_async_context(asynccontextmanager(func)(**kwargs))
@@ -217,41 +223,47 @@ def on(matcher: Matcher | Callable[..., bool] | None = None) -> Callable[..., An
                 @wraps(func)
                 async def wrapper(event: Event, **kwargs) -> Any:
                     if isinstance(event, event_type) and matcher(event):
-                        func_kwargs = {}
+                        func_kwargs: dict[str, Any] = {}
+                        tasks: dict[str, asyncio.Task] = {}
 
                         async with AsyncExitStack() as stack:
-                            for param_name, param in sign.parameters.items():
-                                if isinstance(param.default, Dependency):
-                                    func_kwargs[param_name] = await resolve_dependency(
-                                        event=event,
-                                        dependency=param.default,
-                                        stack=stack,
-                                    )
+                            async with asyncio.TaskGroup() as tg:
+                                for param_name, param in sign.parameters.items():
+                                    if isinstance(param.default, Dependency):
+                                        tasks[param_name] = tg.create_task(
+                                            resolve_dependency(
+                                                event=event,
+                                                dependency=param.default,
+                                                stack=stack,
+                                            )
+                                        )
 
-                                elif isinstance(
-                                    event, annotation_event_type(param.annotation)
-                                ):
-                                    kwargs[param_name] = event
+                                    elif isinstance(
+                                        event, annotation_event_type(param.annotation)
+                                    ):
+                                        func_kwargs[param_name] = event
 
-                                elif param.default is not Parameter.empty:
-                                    kwargs[param_name] = param.default
+                                    elif param.default is not Parameter.empty:
+                                        func_kwargs[param_name] = param.default
 
-                                elif param.kind in (
-                                    Parameter.VAR_POSITIONAL,
-                                    Parameter.VAR_KEYWORD,
-                                ):
-                                    pass
+                                    elif param.kind in (
+                                        Parameter.VAR_POSITIONAL,
+                                        Parameter.VAR_KEYWORD,
+                                    ):
+                                        pass
 
-                                else:
-                                    raise ValueError(
-                                        f"Cannot resolve dependency for parameter '{param_name}' "
-                                        f"in function '{func.__name__}'. "
-                                        f"Parameter must have either a default value, be an Event, or be a Dependency."
-                                    )
+                                    else:
+                                        raise ValueError(
+                                            f"Cannot resolve dependency for parameter '{param_name}' "
+                                            f"in function '{func.__name__}'. "
+                                            f"Parameter must have either a default value, be an Event, or be a Dependency."
+                                        )
 
-                            func_kwargs.update(kwargs)
-
-                            return await func(**func_kwargs)
+                            return await func(
+                                **{k: v.result() for k, v in tasks.items()},
+                                **func_kwargs,
+                                **kwargs,
+                            )
 
             else:
 
@@ -270,41 +282,47 @@ def on(matcher: Matcher | Callable[..., bool] | None = None) -> Callable[..., An
                 @wraps(func)
                 async def wrapper(event: Event, **kwargs) -> Any:
                     if isinstance(event, event_type):
-                        func_kwargs = {}
+                        func_kwargs: dict[str, Any] = {}
+                        tasks: dict[str, asyncio.Task] = {}
 
                         async with AsyncExitStack() as stack:
-                            for param_name, param in sign.parameters.items():
-                                if isinstance(param.default, Dependency):
-                                    func_kwargs[param_name] = await resolve_dependency(
-                                        event=event,
-                                        dependency=param.default,
-                                        stack=stack,
-                                    )
+                            async with asyncio.TaskGroup() as tg:
+                                for param_name, param in sign.parameters.items():
+                                    if isinstance(param.default, Dependency):
+                                        tasks[param_name] = tg.create_task(
+                                            resolve_dependency(
+                                                event=event,
+                                                dependency=param.default,
+                                                stack=stack,
+                                            )
+                                        )
 
-                                elif isinstance(
-                                    event, annotation_event_type(param.annotation)
-                                ):
-                                    kwargs[param_name] = event
+                                    elif isinstance(
+                                        event, annotation_event_type(param.annotation)
+                                    ):
+                                        func_kwargs[param_name] = event
 
-                                elif param.default is not Parameter.empty:
-                                    kwargs[param_name] = param.default
+                                    elif param.default is not Parameter.empty:
+                                        func_kwargs[param_name] = param.default
 
-                                elif param.kind in (
-                                    Parameter.VAR_POSITIONAL,
-                                    Parameter.VAR_KEYWORD,
-                                ):
-                                    pass
+                                    elif param.kind in (
+                                        Parameter.VAR_POSITIONAL,
+                                        Parameter.VAR_KEYWORD,
+                                    ):
+                                        pass
 
-                                else:
-                                    raise ValueError(
-                                        f"Cannot resolve dependency for parameter '{param_name}' "
-                                        f"in function '{func.__name__}'. "
-                                        f"Parameter must have either a default value, be an Event, or be a Dependency."
-                                    )
+                                    else:
+                                        raise ValueError(
+                                            f"Cannot resolve dependency for parameter '{param_name}' "
+                                            f"in function '{func.__name__}'. "
+                                            f"Parameter must have either a default value, be an Event, or be a Dependency."
+                                        )
 
-                            func_kwargs.update(kwargs)
-
-                            return await func(**func_kwargs)
+                            return await func(
+                                **{k: v.result() for k, v in tasks.items()},
+                                **func_kwargs,
+                                **kwargs,
+                            )
 
             else:
 

@@ -1,33 +1,38 @@
 import logging
 from dataclasses import KW_ONLY, dataclass
-from functools import cache
-from typing import Dict, Literal, Type
+from typing import ClassVar, Literal, Self, override
 
-from fastbot.event import Context, Event, MetaClass
+from fastbot.event import Context, Event
 
 
 @dataclass
 class MetaEvent(Event):
     _: KW_ONLY
 
-    meta_event_type: Literal["heartbeat", "lifecycle"]
     post_type: Literal["meta_event"] = "meta_event"
 
-    @classmethod
-    @cache
-    def subcalsses(cls) -> Dict[str, Type["MetaEvent"]]:
-        return {subclass.meta_event_type: subclass for subclass in cls.__subclasses__()}
+    meta_event_type: Literal["heartbeat", "lifecycle"]
+
+    event_type: ClassVar[dict[str, type["MetaEvent"]]] = {}
+
+    def __init_subclass__(cls, *args, **kwargs) -> None:
+        super().__init_subclass__(*args, **kwargs)
+
+        MetaEvent.event_type[cls.post_type] = cls
 
     @classmethod
-    def build_from(cls, *, ctx: Context) -> "MetaEvent":
-        if subclass := cls.subcalsses().get(ctx["meta_event_type"]):
-            return subclass(ctx=ctx, **ctx)
-
-        return cls(
-            ctx=ctx,
-            time=ctx["time"],
-            self_id=ctx["self_id"],
-            meta_event_type=ctx["meta_event_type"],
+    @override
+    def from_ctx(cls, *, ctx: Context) -> "MetaEvent":
+        return (
+            event.from_ctx(ctx=ctx)
+            if (event := cls.event_type.get(ctx["meta_event_type"]))
+            else cls(
+                ctx=ctx,
+                time=ctx["time"],
+                self_id=ctx["self_id"],
+                post_type=ctx["post_type"],
+                meta_event_type=ctx["meta_event_type"],
+            )
         )
 
 
@@ -35,32 +40,36 @@ class MetaEvent(Event):
 class LifecycleMetaEvent(MetaEvent):
     _: KW_ONLY
 
-    time: int
-    self_id: int
-    sub_type: Literal["enable", "disable", "connect"]
-
     meta_event_type: Literal["lifecycle"] = "lifecycle"
 
-    def __init__(self, **kwargs) -> None:
+    sub_type: Literal["enable", "disable", "connect"]
+
+    def __post_init__(self) -> None:
         logging.debug(self.__repr__())
+
+    @classmethod
+    @override
+    def from_ctx(cls, *, ctx: Context) -> Self:
+        return cls(
+            ctx=ctx, **{k: v for k, v in ctx.items() if k in cls.__dataclass_fields__}
+        )
 
 
 @dataclass
 class HeartbeatMetaEvent(MetaEvent):
-    @dataclass
-    class Status(metaclass=MetaClass):
-        pass
-
     _: KW_ONLY
-
-    time: int
-    self_id: int
-    status: Status
-    interval: int
 
     meta_event_type: Literal["heartbeat"] = "heartbeat"
 
-    def __init__(self, **kwargs) -> None:
+    status: dict
+    interval: int
+
+    def __post_init__(self) -> None:
         logging.debug(self.__repr__())
 
-        self.status = self.Status(**self.ctx["status"])
+    @classmethod
+    @override
+    def from_ctx(cls, *, ctx: Context) -> Self:
+        return cls(
+            ctx=ctx, **{k: v for k, v in ctx.items() if k in cls.__dataclass_fields__}
+        )

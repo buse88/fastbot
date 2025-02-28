@@ -2,14 +2,14 @@ from base64 import b64encode
 from dataclasses import KW_ONLY, asdict, dataclass
 from itertools import chain, groupby
 from operator import attrgetter
-from typing import Any, Dict, Iterable, Iterator, List, Literal, Self, TypedDict, Union
+from typing import Any, Iterable, Iterator, Literal, Self, TypedDict, Union
 
 PREV, NEXT, DATA = 0, 1, 2
 
 
 class MessageSegmentData(TypedDict):
     type: str
-    data: Dict[str, Any]
+    data: dict[str, Any]
 
 
 class Link(list):
@@ -208,7 +208,7 @@ class MessageSegment:
     _: KW_ONLY
 
     type: str
-    data: Dict[str, Any]
+    data: dict[str, Any]
 
     def __add__(self, other: Union[str, Iterable[Any], "MessageSegment"]) -> "Message":
         return Message(content=self) + other
@@ -308,7 +308,7 @@ class MessageSegment:
     def node(
         cls,
         id: int | None = None,
-        content: Union["Message", List[Union["MessageSegment", MessageSegmentData]]]
+        content: Union["Message", list[Union["MessageSegment", MessageSegmentData]]]
         | None = None,
         **kwargs,
     ) -> Self:

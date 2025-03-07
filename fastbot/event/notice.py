@@ -16,8 +16,6 @@ class NoticeEvent(Event):
     event_type: ClassVar[dict[str, type["NoticeEvent"]]] = {}
 
     def __init_subclass__(cls, *args, **kwargs) -> None:
-        super().__init_subclass__(*args, **kwargs)
-
         NoticeEvent.event_type[cls.notice_type] = cls
 
     @classmethod

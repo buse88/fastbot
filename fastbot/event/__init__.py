@@ -18,8 +18,6 @@ class Event:
     event_type: ClassVar[dict[str, type["Event"]]] = {}
 
     def __init_subclass__(cls, *args, **kwargs) -> None:
-        super().__init_subclass__(*args, **kwargs)
-
         Event.event_type[cls.post_type] = cls
 
     @classmethod

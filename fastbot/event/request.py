@@ -17,8 +17,6 @@ class RequestEvent(Event):
     event_type: ClassVar[dict[str, type["RequestEvent"]]] = {}
 
     def __init_subclass__(cls, *args, **kwargs) -> None:
-        super().__init_subclass__(*args, **kwargs)
-
         RequestEvent.event_type[cls.request_type] = cls
 
     @classmethod

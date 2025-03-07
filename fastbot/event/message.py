@@ -22,7 +22,7 @@ class MessageEvent(Event):
     def __init_subclass__(cls, *args, **kwargs) -> None:
         super().__init_subclass__(*args, **kwargs)
 
-        MessageEvent.event_type[cls.post_type] = cls
+        MessageEvent.event_type[cls.message_type] = cls
 
     @classmethod
     @override

@@ -18,7 +18,7 @@ class MetaEvent(Event):
     def __init_subclass__(cls, *args, **kwargs) -> None:
         super().__init_subclass__(*args, **kwargs)
 
-        MetaEvent.event_type[cls.post_type] = cls
+        MetaEvent.event_type[cls.meta_event_type] = cls
 
     @classmethod
     @override

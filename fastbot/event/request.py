@@ -19,7 +19,7 @@ class RequestEvent(Event):
     def __init_subclass__(cls, *args, **kwargs) -> None:
         super().__init_subclass__(*args, **kwargs)
 
-        RequestEvent.event_type[cls.post_type] = cls
+        RequestEvent.event_type[cls.request_type] = cls
 
     @classmethod
     @override

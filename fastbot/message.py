@@ -203,7 +203,7 @@ class Link(list):
                 next_node[NEXT] = self
 
 
-@dataclass
+@dataclass(slots=True)
 class MessageSegment:
     _: KW_ONLY
 
@@ -328,7 +328,7 @@ class MessageSegment:
                 },
             )
         else:
-            raise ValueError("Parameter `id` or `content` must be specified")
+            raise ValueError("parameter `id` or `content` must be specified")
 
 
 class Message(Link):
@@ -347,7 +347,7 @@ class Message(Link):
                     chain.from_iterable(Message(content=item) for item in content)
                 )
             else:
-                raise ValueError("Unsupported message type")
+                raise ValueError("unsupported message type")
 
     def __add__(self, other: str | Iterable[Any] | MessageSegment) -> "Message":
         message = Message(content=self)
@@ -371,7 +371,7 @@ class Message(Link):
         elif isinstance(other, Iterable):
             self.extend(chain.from_iterable(Message(content=item) for item in other))
         else:
-            raise ValueError("Unsupported message type")
+            raise ValueError("unsupported message type")
 
         return self
 

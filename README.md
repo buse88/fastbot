@@ -1,10 +1,13 @@
 # FastBot
 
-A lightweight bot framework base on `FastAPI` and `OneBot v11` protocol.
+A lightweight bot framework built on `FastAPI` and the `OneBot v11` protocol.
 
 ## Quick Start
+
 ### Installation
-#### Install from Github
+
+#### Install from GitHub (for development or bleeding-edge features):
+
 ```sh
 pip install --no-cache --upgrade git+https://github.com/OrganRemoved/fastbot.git
 ```
@@ -15,13 +18,16 @@ or
 pip install --no-cache --upgrade https://github.com/OrganRemoved/fastbot/archive/refs/heads/main.zip
 ```
 
-#### Install from PYPI
+#### Install from PyPI (recommended for stable versions):
+
 ```sh
 pip install --no-cache --upgrade fastbot-onebot
 ```
 
 ### Example
-The directory structure is as follows:
+
+The recommended project structure is as follows:
+
 ```sh
 bot_example
 |   __init__.py
@@ -33,6 +39,7 @@ bot_example
 ```
 
 #### bot.py
+
 ```python
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -44,27 +51,17 @@ from fastbot.plugin import PluginManager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    # Register a websocket adapter to `FastAPI`
-    app.add_api_websocket_route("/onebot/v11/ws", FastBot.ws_adapter)
-
-    await asyncio.gather(
-        *(
-            init() if asyncio.iscoroutinefunction(init) else asyncio.to_thread(init)
-            for plugin in PluginManager.plugins.values()
-            if (init := plugin.init)
-        ),
-    )
-
+    # Perform application startup and shutdown tasks here.
     yield
 
 
 if __name__ == "__main__":
     (
         FastBot
-        # `plugins` parameter will pass to `fastbot.plugin.PluginManager.import_from(...)`
-        # the rest parameter will pass to `FastAPI(...)`
+        # `plugins`: Path(s) to plugin directories, passed to `fastbot.plugin.PluginManager.import_from(...)`.
+        # Remaining arguments: Passed directly to `FastAPI(...)`.
         .build(plugins=["plugins"], lifespan=lifespan)
-        # Parameter will pass to `uvicorn.run(...)`
+        # Arguments: Passed directly to `uvicorn.run(...)`.
         .run(host="0.0.0.0", port=80)
     )
 ```
@@ -73,19 +70,20 @@ if __name__ == "__main__":
 
 ```python
 from typing import AsyncGenerator
+from os import environ
 
 from fastbot.event import Context
 from fastbot.event.message import GroupMessageEvent, PrivateMessageEvent
 from fastbot.matcher import Matcher
-from fastbot.plugin import Dependency, PluginManager, middleware, on
+from fastbot.plugin import Dependency, PluginManager, background, middleware, on
 from redis.asyncio.client import Redis, Pipeline
 
 
-# Passing rules to the matcher
+# Defining custom Matchers for complex rule evaluation.
 IsNotGroupAdmin = Matcher(rule=lambda event: event.sender.role != "admin")
 
 
-# Refactoring the Matcher
+# Example: Reusable Matcher for checking against a group blacklist.  Demonstrates Matcher subclassing.
 class IsInGroupBlacklist(Matcher):
     def __init__(self, *blacklist):
         self.blacklist = blacklist
@@ -95,11 +93,22 @@ class IsInGroupBlacklist(Matcher):
 
 
 async def init() -> None:
-    # Do some initial work here
+    # Perform asynchronous initialization tasks when the plugin loads.
+    # Asynchronous generators can be used to implement `lifespan`-like functionality for plugin setup/teardown.
     ...
 
+    # yield  (Optional: include if you will need a teardown)
 
-# Dependency injection
+@background
+async def blocking_backgroud_task() -> None:
+    # The `@background` decorator enables fire-and-forget execution of blocking tasks, ensuring non-blocking operation of the main bot loop.
+    while True:
+        ...
+
+
+# Dependency Injection examples:
+
+# Define an async generator for Redis, handling connection creation and cleanup.
 async def get_redis(*args, **kwargs) -> AsyncGenerator[Redis, None]:
     if "url" in kwargs:
         redis = Redis.from_url(decode_responses=True, *args, **kwargs)
@@ -109,10 +118,10 @@ async def get_redis(*args, **kwargs) -> AsyncGenerator[Redis, None]:
 
     else:
         redis = Redis(
-            host=kwargs.pop("host", environ["REDIS_HOST"]),
-            port=kwargs.pop("port", int(environ["REDIS_PORT"])),
-            db=kwargs.pop("db", environ["REDIS_DB"]),
-            password=kwargs.pop("password", environ["REDIS_PASSWORD"]),
+            host=kwargs.pop("host", environ.get("REDIS_HOST", "localhost")), # Provide a default value!!!
+            port=kwargs.pop("port", int(environ.get("REDIS_PORT", 6379))), # Provide a default value!!!
+            db=kwargs.pop("db", environ.get("REDIS_DB", 0)), # Provide a default value!!!
+            password=kwargs.pop("password", environ.get("REDIS_PASSWORD", None)), # Provide a default value!!!
             decode_responses=kwargs.pop("decode_responses", True),
             **kwargs,
         )
@@ -121,9 +130,9 @@ async def get_redis(*args, **kwargs) -> AsyncGenerator[Redis, None]:
         yield r
 
 
-# Chaining dependency injection
+# Chaining Dependency Injection: Define an async generator that depends on another (Redis connection).
 async def get_pipeline(
-    redis: Redis = Dependency.provide(dependency=redis), *args, **kwargs
+    redis: Redis = Dependency.provide(dependency=get_redis), *args, **kwargs
 ) -> AsyncGenerator[Pipeline, None]:
     async with redis.pipeline(*args, **kwargs) as pipeline:
         yield pipeline
@@ -131,25 +140,28 @@ async def get_pipeline(
         await pipeline.execute()
 
 
-# All middlewares will be executed in sequence
+# Middleware examples:
+
+# Middleware functions are executed in sequence before event handlers.
 @middleware(priority=0)
 async def preprocessing(ctx: Context):
-    if (group_id := ctx.get("group_id")) == ...:
-        # Temporarily disable the plugin
+    if (group_id := ctx.get("group_id")) == ...:  # Replace elipsis with actual condition
+        # Temporarily disable the plugin for specific groups.
         PluginManager.plugins["plugins.plugin_example"].state.set(False)
     elif group_id is None:
-        # When the `Context` is clear, the middleware will discard
-        # the event and terminate processing
+        # When the `Context` is cleared, the middleware will discard
+        # the event and terminate processing, preventing further handlers from being executed.
         ctx.clear()
 
 
-# Combining multiple rules via `&(and)`, `|(or)`,`~(not)`
+# Event Handler example:
+
+# Combining multiple rules using `&(and)`, `|(or)`, and `~(not)`.
 @on(matcher=IsNotGroupAdmin & ~IsInGroupBlacklist(...))
-# For the best performance, you can use `callable function`
-# E.g. `lambda event: event.get("group_id") in (...)`
+# For maximum performance, consider using a callable (e.g., a lambda function) directly in the `matcher`.
+# Example: `lambda event: event.get("group_id") in (...)`
 async def func(
-    # The event type to be handled must be specified via type hints
-    # You can use `|`  or `typing.Union` types
+    # Specify the event type(s) this handler should process using type hints.  Use `|` or `typing.Union` for multiple types.
     event: GroupMessageEvent | PrivateMessageEvent,
     *,
     redis: Redis = Dependency.provide(dependency=get_redis),

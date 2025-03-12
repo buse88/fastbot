@@ -113,8 +113,7 @@ class PrivateMessageEvent(MessageEvent):
         | MessageSegment
         | Iterable[str | Message | MessageSegment],
     ) -> Self:
-        future = asyncio.Future()
-        self.__class__.futures[self.user_id] = future
+        self.__class__.futures[self.user_id] = future = asyncio.Future()
 
         await self.send(message=message)
 
@@ -211,8 +210,9 @@ class GroupMessageEvent(MessageEvent):
         | MessageSegment
         | Iterable[str | Message | MessageSegment],
     ) -> Self:
-        future = asyncio.Future()
-        self.__class__.futures[(self.group_id, self.user_id)] = future
+        self.__class__.futures[(self.group_id, self.user_id)] = future = (
+            asyncio.Future()
+        )
 
         await self.send(message=message)
 

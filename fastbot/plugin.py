@@ -26,7 +26,7 @@ from fastbot.matcher import Matcher
 
 @dataclass(slots=True)
 class Plugin:
-    @dataclass(order=True, slots=True)
+    @dataclass(slots=True)
     class Middleware:
         _: KW_ONLY
 
@@ -38,12 +38,13 @@ class Plugin:
     state: ContextVar[bool] = ContextVar("state", default=True)
 
     init: Callable[..., Any] | None = None
+    backgrounds: list[Callable[..., Any]] = field(default_factory=list)
 
     middlewares: list[Middleware] = field(default_factory=list)
     executors: list[Callable[..., Any]] = field(default_factory=list)
 
-    async def run(self, event: Event) -> None:
-        await asyncio.gather(*(executor(event) for executor in self.executors))
+    async def run(self, *, event: Event) -> list[Any]:
+        return await asyncio.gather(*(executor(event) for executor in self.executors))
 
 
 @dataclass(slots=True)
@@ -57,8 +58,9 @@ class Dependency:
         return cls(dependency=dependency)
 
 
-@dataclass(slots=True)
 class PluginManager:
+    __slots__ = ()
+
     plugins: ClassVar[dict[str, Plugin]] = {}
 
     @classmethod
@@ -71,18 +73,22 @@ class PluginManager:
             try:
                 spec = spec_from_file_location(module_name, module_path)
                 module = module_from_spec(spec)  # type: ignore
-
                 spec.loader.exec_module(module)  # type: ignore
 
                 plugin.init = getattr(module, "init", None)
 
-                logging.info(f"Loaded plugin [{module_name}] from [{module_path}]")
+                logging.info(f"loaded plugin [{module_name}] from [{module_path}]")
 
             except Exception as e:
                 logging.exception(e)
 
             finally:
-                if not (plugin.init or plugin.middlewares or plugin.executors):
+                if not (
+                    plugin.init
+                    or plugin.backgrounds
+                    or plugin.middlewares
+                    or plugin.executors
+                ):
                     del cls.plugins[module_name]
 
         if (path := Path(path_to_import)).is_dir():
@@ -112,7 +118,7 @@ class PluginManager:
                 )
 
                 if not ctx:
-                    logging.warning("The context is empty, discarding")
+                    logging.warning("context is empty, discarding")
 
                     return
 
@@ -128,6 +134,12 @@ class PluginManager:
 
         except Exception as e:
             logging.exception(e)
+
+
+def background(func: Callable[..., Any]) -> Callable[..., Any]:
+    PluginManager.plugins[func.__module__].backgrounds.append(func)
+
+    return func
 
 
 def middleware(*, priority: int = 0) -> Callable[..., Any]:
@@ -186,9 +198,9 @@ def on(matcher: Matcher | Callable[..., bool] | None = None) -> Callable[..., An
 
                 else:
                     raise ValueError(
-                        f"Cannot resolve dependency for parameter '{param_name}' "
+                        f"cannot resolve dependency for parameter '{param_name}' "
                         f"in function '{func.__name__}'. "
-                        f"Parameter must have either a default value, be an Event, or be a Dependency"
+                        f"parameter must have either a default value, be an Event, or be a Dependency"
                     )
 
         kwargs.update({k: v.result() for k, v in tasks.items()})
@@ -254,9 +266,9 @@ def on(matcher: Matcher | Callable[..., bool] | None = None) -> Callable[..., An
 
                                     else:
                                         raise ValueError(
-                                            f"Cannot resolve dependency for parameter '{param_name}' "
+                                            f"cannot resolve dependency for parameter '{param_name}' "
                                             f"in function '{func.__name__}'. "
-                                            f"Parameter must have either a default value, be an Event, or be a Dependency."
+                                            f"parameter must have either a default value, be an Event, or be a Dependency."
                                         )
 
                             return await func(
@@ -313,9 +325,9 @@ def on(matcher: Matcher | Callable[..., bool] | None = None) -> Callable[..., An
 
                                     else:
                                         raise ValueError(
-                                            f"Cannot resolve dependency for parameter '{param_name}' "
+                                            f"cannot resolve dependency for parameter '{param_name}' "
                                             f"in function '{func.__name__}'. "
-                                            f"Parameter must have either a default value, be an Event, or be a Dependency."
+                                            f"parameter must have either a default value, be an Event, or be a Dependency."
                                         )
 
                             return await func(

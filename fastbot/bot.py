@@ -1,10 +1,11 @@
 import asyncio
+from contextlib import AsyncExitStack, asynccontextmanager
+from inspect import isasyncgenfunction
 import logging
 import os
 from contextvars import ContextVar
-from dataclasses import dataclass
 from functools import partial
-from typing import Any, ClassVar, Iterable, Self
+from typing import Any, AsyncGenerator, ClassVar, Iterable, Self
 from weakref import WeakValueDictionary
 
 import uvicorn
@@ -25,8 +26,9 @@ except ImportError:
     )
 
 
-@dataclass(slots=True)
 class FastBot:
+    __slots__ = ()
+
     app: ClassVar[FastAPI]
 
     connectors: ClassVar[WeakValueDictionary[int, WebSocket]] = WeakValueDictionary()
@@ -34,16 +36,13 @@ class FastBot:
 
     self_id: ClassVar[ContextVar[int | None]] = ContextVar("self_id", default=None)
 
-    def __init__(self, *, app: FastAPI = FastAPI()) -> None:
-        self.__class__.app = app
-
     @classmethod
     async def ws_adapter(cls, websocket: WebSocket) -> None:
         if authorization := os.getenv("FASTBOT_AUTHORIZATION"):
             if not (access_token := websocket.headers.get("authorization")):
                 raise WebSocketException(
                     code=status.WS_1008_POLICY_VIOLATION,
-                    reason="Missing `authorization` header",
+                    reason="missing `authorization` header",
                 )
 
             match access_token.split():
@@ -51,43 +50,43 @@ class FastBot:
                     if token != authorization:
                         raise WebSocketException(
                             code=status.HTTP_403_FORBIDDEN,
-                            reason="Invalid `authorization` header",
+                            reason="invalid `authorization` header",
                         )
 
                 case [token]:
                     if token != authorization:
                         raise WebSocketException(
                             code=status.HTTP_403_FORBIDDEN,
-                            reason="Invalid `authorization` header",
+                            reason="invalid `authorization` header",
                         )
 
                 case _:
                     raise WebSocketException(
                         code=status.HTTP_403_FORBIDDEN,
-                        reason="Invalid `authorization` header",
+                        reason="invalid `authorization` header",
                     )
 
         if not (self_id := websocket.headers.get("x-self-id")):
             raise WebSocketException(
                 code=status.WS_1008_POLICY_VIOLATION,
-                reason="Missing `x-self-id` header",
+                reason="missing `x-self-id` header",
             )
 
         if not (self_id.isdigit() and (self_id := int(self_id))):
             raise WebSocketException(
                 code=status.WS_1008_POLICY_VIOLATION,
-                reason="Invalid `x-self-id` header",
+                reason="invalid `x-self-id` header",
             )
 
         if self_id in cls.connectors:
             raise WebSocketException(
                 code=status.WS_1008_POLICY_VIOLATION,
-                reason="Duplicate `x-self-id` header",
+                reason="duplicate `x-self-id` header",
             )
 
         await websocket.accept()
 
-        logging.info(f"Websocket connected {self_id=}")
+        logging.info(f"websocket connected {self_id=}")
 
         cls.connectors[self_id] = websocket
 
@@ -111,7 +110,7 @@ class FastBot:
                             cls.futures[ctx["echo"]].set_exception(RuntimeError(ctx))
 
                     case _:
-                        logging.warning(f"Unknow websocket message received {message=}")
+                        logging.warning(f"unknow websocket message received {message=}")
 
     @classmethod
     async def do(cls, *, endpoint: str, self_id: int | None = None, **kwargs) -> Any:
@@ -122,7 +121,7 @@ class FastBot:
                 or (next(iter(cls.connectors)) if len(cls.connectors) == 1 else None)
             )
         ):
-            raise RuntimeError("Parameter `self_id` must be specified")
+            raise RuntimeError("parameter `self_id` must be specified")
 
         logging.debug(f"{endpoint=} {self_id=} {kwargs=}")
 
@@ -144,9 +143,7 @@ class FastBot:
             del cls.futures[future_id]
 
     @classmethod
-    def build(
-        cls, app: FastAPI = FastAPI(), plugins: str | Iterable[str] | None = None
-    ) -> Self:
+    def build(cls, plugins: str | Iterable[str] | None = None, **kwargs) -> Self:
         if isinstance(plugins, str):
             PluginManager.import_from(plugins)
 
@@ -154,7 +151,38 @@ class FastBot:
             for plugin in plugins:
                 PluginManager.import_from(plugin)
 
-        return cls(app=app)
+        @asynccontextmanager
+        async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+            app.add_api_websocket_route("/onebot/v11/ws", cls.ws_adapter)
+
+            async with AsyncExitStack() as stack, asyncio.TaskGroup() as tg:
+                if lifespan := kwargs.pop("lifespan", None):
+                    await stack.enter_async_context(lifespan(app))
+
+                await asyncio.gather(
+                    *(
+                        (
+                            stack.enter_async_context(asynccontextmanager(init)())
+                            if isasyncgenfunction(init)
+                            else init()
+                        )
+                        for plugin in PluginManager.plugins.values()
+                        if (init := plugin.init)
+                    )
+                )
+
+                for plugin in PluginManager.plugins.values():
+                    if background := plugin.backgrounds:
+                        for task in background:
+                            tg.create_task(task())
+
+                yield
+
+        app = FastAPI(lifespan=lifespan, **kwargs)
+
+        cls.app = app
+
+        return cls()
 
     @classmethod
     def run(cls, **kwargs) -> None:

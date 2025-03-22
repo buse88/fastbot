@@ -6,7 +6,7 @@ from fastbot.bot import FastBot
 from fastbot.event import Context, Event
 
 
-@dataclass
+@dataclass(slots=True)
 class RequestEvent(Event):
     _: KW_ONLY
 
@@ -98,6 +98,7 @@ class GroupRequestEvent(RequestEvent):
             endpoint="set_group_add_request",
             self_id=self.self_id,
             approve=True,
+            flag=self.flag,
             sub_type=self.sub_type,
         )
 
@@ -106,5 +107,6 @@ class GroupRequestEvent(RequestEvent):
             endpoint="set_group_add_request",
             self_id=self.self_id,
             approve=False,
+            flag=self.flag,
             reason=reason,
         )

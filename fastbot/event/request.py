@@ -66,7 +66,10 @@ class FriendRequestEvent(RequestEvent):
 
     async def reject(self) -> Any:
         return await FastBot.do(
-            endpoint="set_friend_add_request", self_id=self.self_id, approve=False
+            endpoint="set_friend_add_request",
+            self_id=self.self_id,
+            approve=False,
+            flag=self.flag,
         )
 
 

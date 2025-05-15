@@ -1,3 +1,6 @@
+原作者插件有点问题，pip安装以后需要重新下载本仓库的fastbot文件进行覆盖才能运行起来
+
+
 # FastBot
 
 A lightweight bot framework built on `FastAPI` and the `OneBot v11` protocol.

@@ -94,23 +94,32 @@ class FastBot:
 
     @classmethod
     async def event_handler(cls, websocket: WebSocket) -> None:
-        async with asyncio.TaskGroup() as tg:
-            while True:
+    async with asyncio.TaskGroup() as tg:
+        while True:
+            try:
                 match message := await websocket.receive():
                     case {"bytes": data} | {"text": data}:
-                        if "post_type" in (ctx := json.loads(data)):
+                        logging.debug(f"Received raw message: {data}")  # 添加调试日志
+                        try:
+                            ctx = json.loads(data)
+                        except json.JSONDecodeError as e:
+                            logging.error(f"Failed to decode JSON from message: {data}. Error: {e}")
+                            continue
+
+                        if "post_type" in ctx:
                             cls.self_id.set(ctx.get("self_id"))
-
+                            logging.debug(f"Processing event with post_type: {ctx['post_type']}, context: {ctx}")
                             tg.create_task(PluginManager.run(ctx=ctx))
-
-                        elif ctx["status"] == "ok":
+                        elif ctx.get("status") == "ok":
+                            logging.debug(f"Received successful response with echo: {ctx['echo']}, data: {ctx.get('data')}")
                             cls.futures[ctx["echo"]].set_result(ctx.get("data"))
-
                         else:
+                            logging.error(f"Received error response with echo: {ctx['echo']}, context: {ctx}")
                             cls.futures[ctx["echo"]].set_exception(RuntimeError(ctx))
-
                     case _:
-                        logging.warning(f"unknow websocket message received {message=}")
+                        logging.warning(f"Unknown websocket message received {message=}")
+            except Exception as e:
+                logging.exception(f"An error occurred while handling WebSocket message: {e}")
 
     @classmethod
     async def do(cls, *, endpoint: str, self_id: int | None = None, **kwargs) -> Any:

@@ -1,47 +1,65 @@
-FROM python:3.12-slim
+#!/bin/bash
 
-WORKDIR /app
+# 设置Docker内存限制（默认为2GB）
+DOCKER_MEMORY_LIMIT="2g"
+DOCKER_CPU_LIMIT="2"
 
-# 完全替换sources.list，使用Debian 12 (Bookworm)的源
-RUN rm -f /etc/apt/sources.list.d/* && \
-    echo "deb https://mirrors.ustc.edu.cn/debian/ bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
-    echo "deb https://mirrors.ustc.edu.cn/debian/ bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
-    echo "deb https://mirrors.ustc.edu.cn/debian/ bookworm-backports main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
-    echo "deb https://mirrors.ustc.edu.cn/debian-security/ bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+# 检查并安装必要的工具
+check_and_install_tool() {
+    if ! command -v $1 &> /dev/null; then
+        echo "正在安装 $1..."
+        apt-get update && apt-get install -y $1 || yum install -y $1
+    fi
+}
+
+check_and_install_tool curl
+
+# 创建临时目录用于下载
+echo "正在从GitHub下载start文件夹..."
+rm -rf ./start
+mkdir -p ./start
+
+# 直接下载start文件夹中的主要文件
+echo "正在下载必要文件..."
+curl -L https://raw.githubusercontent.com/buse88/fastbot/refs/heads/main/start/main.py -o ./start/main.py
+curl -L https://raw.githubusercontent.com/buse88/fastbot/refs/heads/main/start/config.py -o ./start/config.py
+
+# 检查是否成功下载了文件
+if [ ! -f "./start/main.py" ] || [ ! -f "./start/config.py" ]; then
+    echo "错误：下载文件失败！请检查网络连接或代理设置。"
+    exit 1
+fi
+
+echo "文件下载成功！"
+
+# 构建Docker镜像
+echo "正在构建Docker镜像..."
+docker build --memory="${DOCKER_MEMORY_LIMIT}" \
+             -t python-app:latest .
+
+# 检查构建是否成功
+if [ $? -eq 0 ]; then
+    echo "Docker镜像构建成功！"
     
-# 更新并安装必要软件包（添加错误处理）
-RUN apt-get update || (echo "APT更新失败，使用备用方法" && \
-    apt-get -o Acquire::AllowInsecureRepositories=true update) && \
-    apt-get install -y git curl && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Configure pip to use Chinese mirrors globally
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-    && pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn \
-    && pip install --upgrade pip
-
-# Download requirements.txt from GitHub
-RUN curl -L https://raw.githubusercontent.com/buse88/fastbot/refs/heads/main/docker/requirements.txt -o requirements.txt
-
-# Install dependencies using Chinese mirrors
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Create directories for mounted volumes
-RUN mkdir -p /app/config
-
-# Create entrypoint script to check configuration
-RUN echo '#!/bin/sh' > /usr/local/bin/entrypoint.sh && \
-    echo 'cd /app' >> /usr/local/bin/entrypoint.sh && \
-    echo 'python -c "import sys, os; sys.path.append(os.path.dirname(os.path.realpath(__file__))); from config.config import WATCHED_GROUP_IDS; exit(1) if WATCHED_GROUP_IDS == \"000,111\" else None" || echo "请根据提示修改config.py中的WATCHED_GROUP_IDS参数"' >> /usr/local/bin/entrypoint.sh && \
-    echo 'exec python main.py' >> /usr/local/bin/entrypoint.sh && \
-    chmod +x /usr/local/bin/entrypoint.sh
-
-# Expose port 5670
-EXPOSE 5670
-
-# Set the entrypoint script as the container's entry point
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-
-# This CMD will be overridden by the entrypoint if config validation fails
-CMD ["python", "main.py"] 
+    # 运行容器
+    echo "是否要立即运行容器？(y/n)"
+    read answer
+    
+    if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
+        echo "正在启动容器..."
+        docker run -it -p 5670:5670 \
+            -m "${DOCKER_MEMORY_LIMIT}" \
+            --cpus="${DOCKER_CPU_LIMIT}" \
+            -v $(pwd)/start:/app \
+            --name python-app python-app:latest
+    else
+        echo "如需手动启动容器，请运行以下命令:"
+        echo "docker run -it -p 5670:5670 \\
+            -m ${DOCKER_MEMORY_LIMIT} \\
+            --cpus=${DOCKER_CPU_LIMIT} \\
+            -v $(pwd)/start:/app \\
+            --name python-app python-app:latest"
+    fi
+else
+    echo "构建失败，请检查错误信息。"
+fi 

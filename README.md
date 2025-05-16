@@ -1,5 +1,11 @@
-原作者插件有点问题，pip需要安装下载本仓库的fastbot文件
+入口文件为https://github.com/buse88/fastbot/tree/main/start 下载下来以后放到本地任意目录执行main.py
+原作者插件有点问题，pip需要安装下载本仓库的fastbot文件目前为2025.05.16最新版
+需要旧版执行：
 
+```
+git clone https://raw.githubusercontent.com/buse88/fastbot/refs/heads/main/fastbot-2025.1.28/requirements.txt /tmp/requirements && \
+cp /tmp/requirements/requirements.txt && pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --no-cache-dir -r requirements.txt
+```
 
 # FastBot
 

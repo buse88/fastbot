@@ -12,7 +12,7 @@ A lightweight bot framework built on `FastAPI` and the `OneBot v11` protocol.
 #### Install from GitHub (for development or bleeding-edge features):
 
 ```sh
-pip install --no-cache --upgrade git+[https://github.com/OrganRemoved/fastbot.git](https://github.com/buse88/fastbot.git)
+pip install --no-cache --upgrade git+[https://github.com/OrganRemoved/fastbot.git]
 ```
 
 or

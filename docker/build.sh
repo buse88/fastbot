@@ -52,7 +52,7 @@ if [ $? -eq 0 ]; then
             -m "${DOCKER_MEMORY_LIMIT}" \
             --cpus="${DOCKER_CPU_LIMIT}" \
             -v $(pwd)/start:/app \
-            --name python-app python-app:latest
+            --name qqbot python-app:latest
     else
         echo "如需手动启动容器，请运行以下命令:"
         echo "docker run -it -p 5670:5670 \\

@@ -31,28 +31,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN mkdir -p /app/config
 
 # Create entrypoint script to check configuration
-RUN echo '#!/bin/sh\n\
-python -c "\n\
-import sys\n\
-import os\n\
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))\n\
-try:\n\
-    from config.config import WATCHED_GROUP_IDS\n\
-    if WATCHED_GROUP_IDS == \"000,111\":\n\
-        print(\"请根据提示修改config.py中的WATCHED_GROUP_IDS参数\")\n\
-        sys.exit(1)\n\
-except (ImportError, AttributeError):\n\
-    pass\n\
-"\n\
-# If script execution reaches here, config is valid, so start the main application\n\
-exec python main.py' > /app/entrypoint.sh && \
-    chmod +x /app/entrypoint.sh
+RUN echo '#!/bin/sh' > /usr/local/bin/entrypoint.sh && \
+    echo 'cd /app' >> /usr/local/bin/entrypoint.sh && \
+    echo 'python -c "import sys, os; sys.path.append(os.path.dirname(os.path.realpath(__file__))); from config.config import WATCHED_GROUP_IDS; exit(1) if WATCHED_GROUP_IDS == \"000,111\" else None" || echo "请根据提示修改config.py中的WATCHED_GROUP_IDS参数"' >> /usr/local/bin/entrypoint.sh && \
+    echo 'exec python main.py' >> /usr/local/bin/entrypoint.sh && \
+    chmod +x /usr/local/bin/entrypoint.sh
 
 # Expose port 5670
 EXPOSE 5670
 
 # Set the entrypoint script as the container's entry point
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 # This CMD will be overridden by the entrypoint if config validation fails
 CMD ["python", "main.py"] 

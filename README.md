@@ -1,4 +1,4 @@
-原作者插件有点问题，pip安装以后需要重新下载本仓库的fastbot文件进行覆盖才能运行起来
+原作者插件有点问题，pip需要安装下载本仓库的fastbot文件
 
 
 # FastBot
@@ -12,7 +12,7 @@ A lightweight bot framework built on `FastAPI` and the `OneBot v11` protocol.
 #### Install from GitHub (for development or bleeding-edge features):
 
 ```sh
-pip install --no-cache --upgrade git+https://github.com/OrganRemoved/fastbot.git
+pip install --no-cache --upgrade git+[https://github.com/OrganRemoved/fastbot.git](https://github.com/buse88/fastbot.git)
 ```
 
 or

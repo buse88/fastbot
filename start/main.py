@@ -32,4 +32,4 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, lambda signum, frame: handle_exit(signum, frame, bot))
     
     # 运行 FastBot
-    bot.run(host="0.0.0.0", port=8080)
+    bot.run(host="0.0.0.0", port=5670)

@@ -1,5 +1,6 @@
 #!/bin/bash
 
+# 该版本安装的是fastbot-20251.28版非原作者最新版，最新版有部分问题已经修改完放在我仓库fastbot文件夹
 # 设置Docker内存限制（默认为2GB）
 DOCKER_MEMORY_LIMIT="2g"
 DOCKER_CPU_LIMIT="2"

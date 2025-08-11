@@ -6,6 +6,7 @@
 git clone https://raw.githubusercontent.com/buse88/fastbot/refs/heads/main/fastbot-2025.1.28/requirements.txt /tmp/requirements && \
 cp /tmp/requirements/requirements.txt && pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --no-cache-dir -r requirements.txt
 ```
+docker安装方法： 下载docker文件夹到服务器，执行./build.sh
 
 # FastBot
 
@@ -187,3 +188,4 @@ async def func(
             await new_event.send("Guess right!")
             return
 ```
+

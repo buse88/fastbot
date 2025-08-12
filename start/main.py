@@ -29,7 +29,7 @@ from config import (
     CLEANUP_DAYS,
     CLEANUP_HOUR,
     JD_APPID,
-    JDJPK_APPKEY # 新增：从config导入JDJPK_APPKEY
+    JDJPK_APPKEY
 )
 
 # 调试日志函数
@@ -53,8 +53,8 @@ async def cleanup_old_messages(days_to_keep: int = 7) -> str:
     cursor = conn.cursor()
     
     try:
-        # 计算清理的时间点
-        cutoff_date = datetime.datetime.now() - datetime.timedelta(days=days_to_keep)
+        # 计算清理的时间点 (使用UTC时间)
+        cutoff_date = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_to_keep)
         cutoff_str = cutoff_date.isoformat()
         
         # 查询要删除的消息数量
@@ -158,6 +158,20 @@ async def get_database_stats() -> str:
         cursor.execute("SELECT MIN(created_at) FROM messages")
         oldest_message = cursor.fetchone()[0]
         
+        # 转换最早消息时间到本地时区（CST = UTC+8）
+        oldest_message_display = "无"
+        if oldest_message:
+            try:
+                # 假设数据库存储的是ISO格式的UTC时间字符串
+                dt_utc = datetime.datetime.fromisoformat(oldest_message).replace(tzinfo=datetime.timezone.utc)
+                # 定义CST时区（UTC+8）
+                cst_tz = datetime.timezone(datetime.timedelta(hours=8))
+                oldest_message_cst = dt_utc.astimezone(cst_tz)
+                oldest_message_display = oldest_message_cst.strftime('%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                debug_log(f"获取数据库统计：无法解析最早消息时间字符串: {oldest_message}")
+                oldest_message_display = oldest_message # 解析失败时显示原始字符串
+
         # 数据库文件大小（需要os模块）
         import os
         db_size = os.path.getsize(DB_FILE) / (1024 * 1024)  # MB
@@ -167,7 +181,7 @@ async def get_database_stats() -> str:
             f"总消息数: {total_messages}\n"
             f"已撤回消息: {recalled_messages}\n"
             f"未撤回消息: {active_messages}\n"
-            f"最早消息时间: {oldest_message or '无'}\n"
+            f"最早消息时间: {oldest_message_display}\n"
             f"数据库大小: {db_size:.2f} MB"
         )
         
@@ -381,7 +395,7 @@ async def convert_tkl(tkl: str, processed_titles: Set[str]) -> Optional[str]:
         debug_log(f"TB错误: {str(e)}")
         return "淘宝转链失败: 请求异常"
 
-# MODIFIED: convert_jd_link function to include command conversion and JDJPK_APPKEY
+# MODIFIED: convert_jd_link function to use short_url for command generation
 async def convert_jd_link(material_url: str, processed_titles: Set[str]) -> Optional[str]:
     # --- Existing JD API call (to get product info and short URL) ---
     base_url = "http://api.zhetaoke.com:20000/api/open_jing_union_open_promotion_byunionid_get.ashx"
@@ -393,7 +407,7 @@ async def convert_jd_link(material_url: str, processed_titles: Set[str]) -> Opti
         "chainType": 3,
         "signurl": 5
     }
-    debug_log_full_api(base_url, params)
+    debug_log(f"调用主要京东转链API: {base_url} with materialId={material_url}")
     jd_command_text = "" # Initialize JD command
     
     try:
@@ -413,43 +427,51 @@ async def convert_jd_link(material_url: str, processed_titles: Set[str]) -> Opti
                     processed_titles.add(jianjie)
                     pict_url = content.get('pict_url', content.get('pic_url', ''))
                     image_cq = f"[CQ:image,file={pict_url}]" if pict_url else ""
-                    short_url = content.get('shorturl', '未知') # Get the short URL
+                    short_url_from_zhetaoke = content.get('shorturl', '') # Get the short URL from the first API
                     
-                    # --- New JD Command API call with JDJPK_APPKEY ---
-                    command_api_url = "http://api.jingpinku.com/get_goods_command/api"
-                    command_params = {
-                        "appkey": JDJPK_APPKEY, # MODIFIED: 使用 JDJPK_APPKEY
-                        "union_id": JD_UNION_ID,
-                        "position_id": JD_POSITION_ID,
-                        "content": material_url, 
-                        "material_url": material_url, 
-                        "appid": JD_APPID
-                    }
-                    debug_log_full_api(command_api_url, command_params)
-                    
-                    try:
-                        async with session.get(command_api_url, params=command_params, timeout=5) as cmd_response:
-                            cmd_response.raise_for_status()
-                            cmd_result = await cmd_response.json(content_type=None)
-                            if cmd_result.get("code") == 0 and "data" in cmd_result:
-                                jd_command_text = cmd_result["data"].get("jShortCommand", "")
-                                if jd_command_text:
-                                    jd_command_text = f"\n【口令】{jd_command_text}"
-                                debug_log(f"京东口令转换成功: {jd_command_text}")
-                            else:
-                                debug_log(f"京东口令转换失败: {cmd_result.get('msg', '未知错误')}")
-                    except Exception as cmd_e:
-                        debug_log(f"京东口令API请求异常: {str(cmd_e)}")
+                    # --- New JD Command API call using the obtained short_url ---
+                    if short_url_from_zhetaoke: # Only call if short_url was successfully obtained
+                        command_api_url = "http://api.jingpinku.com/get_goods_command/api"
+                        command_params = {
+                            "appkey": JDJPK_APPKEY,
+                            "union_id": JD_UNION_ID,
+                            "position_id": JD_POSITION_ID,
+                            "material_url": short_url_from_zhetaoke, # MODIFIED: 使用从上一个API获取的 short_url
+                            "appid": JD_APPID
+                        }
+                        debug_log(f"调用京东口令API: {command_api_url} with material_url={short_url_from_zhetaoke}")
+                        
+                        try:
+                            async with session.get(command_api_url, params=command_params, timeout=5) as cmd_response:
+                                cmd_response.raise_for_status()
+                                cmd_result = await cmd_response.json(content_type=None)
+                                if cmd_result.get("code") == 0 and "data" in cmd_result:
+                                    jd_command_text_raw = cmd_result["data"].get("jShortCommand", "")
+                                    if jd_command_text_raw:
+                                        jd_command_text = f"【口令】{jd_command_text_raw}"
+                                    debug_log(f"京东口令转换成功: {jd_command_text_raw}")
+                                else:
+                                    debug_log(f"京东口令转换失败: {cmd_result.get('msg', '未知错误')}")
+                        except Exception as cmd_e:
+                            debug_log(f"京东口令API请求异常: {str(cmd_e)}")
+                    else:
+                        debug_log("未获取到有效的short_url，跳过京东口令生成。")
 
                     # Combine results from both APIs
-                    return (
-                        f"商品: {jianjie}\n\n"
-                        f"券后: {content.get('quanhou_jiage', '未知')}\n"
-                        f"佣金: {content.get('tkfee3', '未知')}\n"
-                        f"购买链接: {short_url}"
-                        f"{jd_command_text}\n" # Insert the command here, followed by a newline
-                        f"{image_cq}"
+                    # MODIFIED: 调整返回字符串的换行符，确保精确格式
+                    return_string = (
+                        f"【商品】: {jianjie}\n\n"
+                        f"【券后】: {content.get('quanhou_jiage', '未知')}\n"
+                        f"【佣金】: {content.get('tkfee3', '未知')}\n"
+                        f"【领券买】: {short_url_from_zhetaoke}\n"
                     )
+                    if jd_command_text: # 如果口令存在，则添加口令及一个换行
+                        return_string += f"{jd_command_text}\n"
+                    
+                    if image_cq: # 如果图片CQ码存在，则添加
+                        return_string += f"{image_cq}"
+                    
+                    return return_string
                 
                 # Error handling for the first JD API call
                 if "jd_union_open_promotion_byunionid_get_response" in result:
@@ -668,6 +690,7 @@ async def query_database() -> str:
         result = [f"数据库消息总数: {total_count}"]
         
         # 只显示最近的20条消息，防止消息过多导致群聊内容过长
+        cst_tz = datetime.timezone(datetime.timedelta(hours=8)) # 定义CST时区（UTC+8）
         for i, message_data in enumerate(messages[:20], 1): 
             group_id = message_data[0]
             user_id = message_data[1]
@@ -675,6 +698,17 @@ async def query_database() -> str:
             raw_message = message_data[3]
             recalled = message_data[4] if "recalled" in columns else 0
             created_at = message_data[5] if "created_at" in columns else "未知"
+            
+            created_at_display = "未知"
+            if created_at != "未知":
+                try:
+                    # 假设数据库存储的是ISO格式的UTC时间字符串
+                    dt_utc = datetime.datetime.fromisoformat(created_at).replace(tzinfo=datetime.timezone.utc)
+                    created_at_cst = dt_utc.astimezone(cst_tz)
+                    created_at_display = created_at_cst.strftime('%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    debug_log(f"查询数据库：无法解析时间字符串: {created_at}")
+                    created_at_display = created_at # 解析失败时显示原始字符串
             
             group_str = f"群号: {group_id}" if group_id else "私聊"
             status = "已撤回" if recalled else "未撤回"
@@ -684,7 +718,7 @@ async def query_database() -> str:
                 f"用户ID: {user_id}\n"
                 f"消息ID: {message_id}\n"
                 f"状态: {status}\n"
-                f"创建时间: {created_at}\n"
+                f"创建时间: {created_at_display}\n"
                 f"内容: {raw_message[:50]}{'...' if len(raw_message) > 50 else ''}"
             )
         
@@ -998,13 +1032,13 @@ async def _handle_message_event(event: Dict, websocket: WebSocket):
         reply_content = f"处理消息失败: {str(e)}"
         needs_auto_recall_reply = True # 报错信息也应被撤回
 
-    # 3. 如果是群聊中的命令消息，调度撤回用户发送的该命令消息本身 (延迟10秒)
+    # 3. 如果是群聊中的命令消息，调度撤回用户发送的该命令消息本身 (延迟5秒)
     # 只有当 process_message 返回内容且指定需要自动撤回时，才认为是需要处理的用户指令。
     # 且仅针对监控群聊中的指令消息进行此操作。
     # 并且，确保这个消息不是机器人自己发的（用户指令）。
     if reply_content and needs_auto_recall_reply and message_id and group_id in WATCHED_GROUP_IDS and user_id != self_id:
-        debug_log(f"用户指令消息 {message_id} 已安排10秒后自动撤回")
-        asyncio.create_task(auto_recall_message(websocket, message_id, delay=10))
+        debug_log(f"用户指令消息 {message_id} 已安排5秒后自动撤回")
+        asyncio.create_task(auto_recall_message(websocket, message_id, delay=5))
 
     # 4. 如果有回复内容，则发送回复
     sent_message_id: Optional[int] = None # 机器人发送的回复消息的ID
@@ -1078,9 +1112,9 @@ async def _handle_message_event(event: Dict, websocket: WebSocket):
                         else:
                             debug_log(f"跳过保存机器人回复消息到数据库 (非监控群或为指令回复): message_id={sent_message_id}, raw_message={reply_content}")
                         
-                        # 5. 调度撤回机器人回复消息 (延迟10秒，如果需要)
+                        # 5. 调度撤回机器人回复消息 (延迟5秒，如果需要)
                         if needs_auto_recall_reply:
-                            delay_seconds = 10 if is_instruction_reply_content else 30 # 指令回复10秒，其他30秒
+                            delay_seconds = 5 if is_instruction_reply_content else 10 # 指令回复5秒，其他10秒
                             asyncio.create_task(auto_recall_message(websocket, sent_message_id, delay=delay_seconds))
                             debug_log(f"机器人回复消息 {sent_message_id} 已安排 {delay_seconds}秒 后自动撤回")
                         else:

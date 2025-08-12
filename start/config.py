@@ -16,23 +16,26 @@ PID = ""
 RELATION_ID  = ""
 
 # 京东-折京客
-JD_APPID = ""
+# JD_APPID = ""
 JD_APPKEY = ""
 JD_UNION_ID = ""
 JD_POSITION_ID = ""
  
 # 京东精品库API配置
-# JD_APPID = ""
-# JD_APPKEY = ""
+JD_APPID = "" # https://member.jingpinku.com/develop/item/id/504.do 登录以后进去能看到这两个参数，以及接口
+JDJPK_APPKEY = ""
 # JD_UNION_ID = ""
 # JD_POSITION_ID = ""
 
 # 支持的指令及其说明
 COMMANDS = {
+    "指令": "显示所有支持的指令及其说明\n",
     "撤回 n": "撤回指定群最近 n 条消息，例如 '撤回 5'\n",
     "撤回全部": "撤回数据库中所有消息\n",
+    "引用消息 撤回": "撤回引用的消息（引用图片跟表情会的撤回会出错，ntqq的问题）\n", 
+    "@某人 撤回": "撤回某人所有消息\n",
+    "@撤回id xxx": "撤回指定id消息（多用于测试）\n", 
     "查数据库": "查询数据库中所有消息记录\n",
-    "指令": "显示所有支持的指令及其说明\n",
     "清理数据库": "清理7天前的已撤回消息\n",
     "清理全部已撤回": "清理所有已撤回消息\n",
     "清理3天": "清理3天前的已撤回消息\n",
